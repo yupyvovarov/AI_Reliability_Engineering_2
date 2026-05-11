@@ -1,0 +1,18 @@
+# agentgateway Helm values
+# Full reference: helm show values oci://cr.agentgateway.dev/charts/agentgateway
+
+# LLM configuration is done via the AgentgatewayBackend CRD (k8s/agentgateway-backend.yaml),
+# not via a ConfigMap or env vars.
+
+controller:
+  # extraEnv is a map (key: value or key: valueFrom: ...)
+  extraEnv: {}
+
+# Resource requests for the proxy (data plane) pod
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi

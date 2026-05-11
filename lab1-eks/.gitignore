@@ -1,0 +1,7 @@
+# Cluster-specific overrides — not for git
+helm/*-cluster.yaml
+cluster-*.sh
+
+# API keys and secrets
+k8s/*api_key*
+k8s/*api_keys*

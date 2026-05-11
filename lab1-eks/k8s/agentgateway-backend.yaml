@@ -1,0 +1,16 @@
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: openai
+  namespace: yuriip-ai-reliability-engineering-2
+spec:
+  ai:
+    provider:
+      openai:
+        model: gpt-4o-mini
+  policies:
+    auth:
+      # Secret must contain key "Authorization" with value = raw API key (sk-...)
+      # agentgateway prepends "Bearer " automatically for OpenAI
+      secretRef:
+        name: openai-agentgateway-secret
