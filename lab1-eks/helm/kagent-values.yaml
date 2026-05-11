@@ -1,0 +1,11 @@
+# kagent Helm values
+# Full reference: helm show values oci://ghcr.io/kagent-dev/kagent/helm/kagent
+
+providers:
+  default: openAI
+  openAI:
+    provider: OpenAI
+    model: "gpt-4o-mini"
+    # Secret name and key must match what you create in Step 1
+    apiKeySecretRef: kagent-openai
+    apiKeySecretKey: OPENAI_API_KEY

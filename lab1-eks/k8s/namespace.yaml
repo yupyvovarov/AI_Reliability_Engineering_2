@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: yuriip-ai-reliability-engineering-2
+  labels:
+    owner: yuriip
+    lab: lab1-agentgateway
