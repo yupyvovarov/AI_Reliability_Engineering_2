@@ -24,13 +24,14 @@ metadata:
   namespace: kagent
 spec:
   type: Declarative
-  description: "Agent that uses time MCP server tools"
+  description: "Agent that uses time MCP server tools [v2 via GitOps]"
   declarative:
     modelConfig: default-model-config
     runtime: python
     systemMessage: |
       You are a helpful assistant with access to time tools.
       Use them to answer questions about current time and timezones.
+      Always mention the timezone name when reporting time.
     tools:
     - type: McpServer
       mcpServer:
