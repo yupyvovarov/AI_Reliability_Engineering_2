@@ -1,0 +1,23 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: lab2-releases
+  namespace: flux-system
+spec:
+  interval: 5m
+  url: oci://ghcr.io/yupyvovarov/ai_reliability_engineering_2/lab2-releases
+  ref:
+    semver: ">=0.0.1"
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: lab2-releases
+  namespace: flux-system
+spec:
+  interval: 5m
+  sourceRef:
+    kind: OCIRepository
+    name: lab2-releases
+  path: "./"
+  prune: true

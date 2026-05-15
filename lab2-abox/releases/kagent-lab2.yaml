@@ -1,0 +1,43 @@
+apiVersion: kagent.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: time-mcp
+  namespace: kagent
+spec:
+  transportType: stdio
+  stdioTransport: {}
+  deployment:
+    image: mcp/time:latest
+    cmd: /app/.venv/bin/mcp-server-time
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 250m
+        memory: 256Mi
+---
+apiVersion: kagent.dev/v1alpha2
+kind: Agent
+metadata:
+  name: time-agent
+  namespace: kagent
+spec:
+  type: Declarative
+  description: "Agent that uses time MCP server tools [v2 via GitOps]"
+  declarative:
+    modelConfig: default-model-config
+    runtime: python
+    systemMessage: |
+      You are a helpful assistant with access to time tools.
+      Use them to answer questions about current time and timezones.
+      Always mention the timezone name when reporting time.
+    tools:
+    - type: McpServer
+      mcpServer:
+        apiGroup: kagent.dev
+        kind: MCPServer
+        name: time-mcp
+        toolNames:
+        - get_current_time
+        - convert_time

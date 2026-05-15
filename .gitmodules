@@ -1,0 +1,3 @@
+[submodule "lab2-abox/abox"]
+	path = lab2-abox/abox
+	url = https://github.com/den-vasyliev/abox.git

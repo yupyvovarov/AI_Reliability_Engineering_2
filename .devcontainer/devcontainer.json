@@ -1,0 +1,45 @@
+{
+  "name": "AI Reliability Engineering — Lab 2",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-22.04",
+
+  "features": {
+    // Docker-in-Docker: обовʼязково для KinD (запускає Docker daemon всередині контейнера)
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    // kubectl + helm (без minikube)
+    "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {
+      "minikube": "none"
+    }
+  },
+
+  // Порти для UI доступу до компонентів abox
+  "forwardPorts": [8080, 15000],
+  "portsAttributes": {
+    "8080":  { "label": "Kagent UI",            "onAutoForward": "notify" },
+    "15000": { "label": "agentgateway admin",   "onAutoForward": "notify" }
+  },
+
+  // Секрет треба додати в: Repository Settings → Secrets → Codespaces
+  "secrets": {
+    "OPENAI_API_KEY": {
+      "description": "OpenAI API key — використовується kagent для GPT-4o-mini"
+    }
+  },
+
+  // Ініціалізація submodule після створення Codespace
+  "postCreateCommand": "git submodule update --init --recursive",
+
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "16gb",
+    "storage": "32gb"
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-kubernetes-tools.vscode-kubernetes-tools",
+        "ms-azuretools.vscode-docker"
+      ]
+    }
+  }
+}
