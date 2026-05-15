@@ -207,6 +207,9 @@ kubectl get agents.kagent.dev -n yuriip-ai-reliability-engineering-2
 ```bash
 helm uninstall kagent -n yuriip-ai-reliability-engineering-2
 helm uninstall kagent-crds -n yuriip-ai-reliability-engineering-2
+kubectl delete -f k8s/model-httproute.yaml
+kubectl delete -f k8s/gateway.yaml
+kubectl delete -f k8s/agentgateway-backend.yaml
 helm uninstall agentgateway -n yuriip-ai-reliability-engineering-2
 helm uninstall agentgateway-crds -n yuriip-ai-reliability-engineering-2
 kubectl delete namespace yuriip-ai-reliability-engineering-2
