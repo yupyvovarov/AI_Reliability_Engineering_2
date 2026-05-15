@@ -32,16 +32,18 @@ jobs:
         id: push
         run: |
           TAG=${GITHUB_REF_NAME#lab2/v}
-          digest=$(flux push artifact oci://ghcr.io/${{ github.repository }}/lab2-releases:${TAG} \
+          REPO=${GITHUB_REPOSITORY,,}
+          digest=$(flux push artifact oci://ghcr.io/${REPO}/lab2-releases:${TAG} \
             --path="./lab2-abox/releases" \
             --source="${{ github.repositoryUrl }}" \
             --revision="${{ github.ref_name }}@sha1:${{ github.sha }}" \
             --output json | jq -r '.digest')
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
           echo "digest=${digest}" >> $GITHUB_OUTPUT
+          echo "repo=${REPO}" >> $GITHUB_OUTPUT
 
       - name: Tag artifact
         run: |
           flux tag artifact \
-            oci://ghcr.io/${{ github.repository }}/lab2-releases:${{ steps.push.outputs.tag }}@${{ steps.push.outputs.digest }} \
+            oci://ghcr.io/${{ steps.push.outputs.repo }}/lab2-releases:${{ steps.push.outputs.tag }}@${{ steps.push.outputs.digest }} \
             --tag latest

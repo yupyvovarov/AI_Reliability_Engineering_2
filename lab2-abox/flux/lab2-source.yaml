@@ -5,7 +5,7 @@ metadata:
   namespace: flux-system
 spec:
   interval: 5m
-  url: oci://ghcr.io/yupyvovarov/AI_Reliability_Engineering_2/lab2-releases
+  url: oci://ghcr.io/yupyvovarov/ai_reliability_engineering_2/lab2-releases
   ref:
     semver: ">=0.0.1"
 ---
