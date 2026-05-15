@@ -1,0 +1,20 @@
+apiVersion: kagent.dev/v1alpha2
+kind: Agent
+metadata:
+  name: time-agent
+  namespace: kagent
+spec:
+  type: Declarative
+  description: "Agent that uses time MCP server tools"
+  declarative:
+    modelConfig: default-model-config
+    runtime: python
+    systemMessage: |
+      You are a helpful assistant with access to time tools.
+      Use them to answer questions about current time and timezones.
+    tools:
+    - type: McpServer
+      mcpServer:
+        apiGroup: kagent.dev
+        kind: MCPServer
+        name: time-mcp
