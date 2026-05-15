@@ -87,10 +87,29 @@ make apply
 
 # Збампити версію, затегувати і запушити → CI публікує OCI artifact
 make push
-
-# Слідкуй за reconciliation
-flux get kustomizations -A --watch
 ```
+
+> Інтервал перевірки нових версій — **5 хвилин** (`flux/lab2-source.yaml` → `interval: 5m`).
+> Щоб не чекати, форсуй reconciliation:
+
+```bash
+flux reconcile source oci lab2-releases -n flux-system
+```
+
+### Перевірка
+
+```bash
+# Flux підхопив нову версію
+flux get sources oci -n flux-system
+
+# Kustomization застосувалась
+flux get kustomizations -n flux-system
+
+# Агент оновився в кластері
+kubectl get agent time-agent -n kagent -o jsonpath='{.spec.description}'
+```
+
+CI перевіряй через браузер: `github.com/<user>/AI_Reliability_Engineering_2/actions`
 
 ---
 
