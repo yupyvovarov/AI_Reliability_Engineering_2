@@ -15,5 +15,6 @@ push:
 	@echo "Tagged and pushed $(NEW_TAG)"
 
 apply:
+	@kubectl wait --for=condition=Established crd/ocirepositories.source.toolkit.fluxcd.io --timeout=120s
 	@kubectl apply -f flux/lab2-source.yaml
 	@echo "Flux lab2 source applied. Watch: flux get sources oci -n flux-system"

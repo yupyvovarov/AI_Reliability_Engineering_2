@@ -1,207 +1,94 @@
 # Lab 2 — Agentic Box (abox)
 
-Розгортання повного agentic-стеку: KinD + Flux GitOps + agentgateway + kagent.
+## Передумови
 
-## Стек
-
-| Компонент | Версія | Призначення |
-|---|---|---|
-| [abox](https://github.com/den-vasyliev/abox) | main | Bootstrap-обгортка над усім стеком |
-| KinD | latest | Локальний Kubernetes (1 control-plane + 2 workers) |
-| Flux CD | 2.x | GitOps-оркестрація через OCI artifacts |
-| agentgateway | v2.2.1 | AI-aware API Gateway |
-| kagent | 0.7.23 | Agent runtime для Kubernetes |
-| OpenAI | GPT-4o-mini | LLM-провайдер |
-
-## Структура директорії
-
-```
-lab2-abox/
-├── abox/           # Git submodule — форк https://github.com/den-vasyliev/abox
-├── k8s/            # Beginner: declarative MCP-сервер та агент (kubectl apply)
-├── releases/       # Advanced: GitOps-розгортання через Flux OCI
-└── README.md
-```
-
----
-
-## Завдання 1 — Розгортання abox
-
-> Виконується у **GitHub Codespaces**. Рекомендований розмір машини: **4-core / 16 GB**.
-
-### Підготовка Codespaces
-
-Встанови секрет `OPENAI_API_KEY` у налаштуваннях Codespaces перед стартом:
+У налаштуваннях Codespaces задай секрет `OPENAI_API_KEY`:
 `Settings → Secrets and variables → Codespaces → New repository secret`
 
-### Клонування репо з submodule
+---
+
+## 1. Запуск Codespace
+
+Відкрий репозиторій у GitHub Codespaces (**4-core / 16 GB**).
+`devcontainer.json` автоматично ініціалізує submodule.
+
+---
+
+## 2. Встановлення Flux CLI
 
 ```bash
-git clone --recurse-submodules https://github.com/<your-org>/AI_Reliability_Engineering_2.git
-cd AI_Reliability_Engineering_2/lab2-abox
+curl -s https://fluxcd.io/install.sh | FLUX_INSTALL_PATH=$HOME/.local/bin bash
 ```
 
-Якщо репо вже клоновано без submodule:
+---
+
+## 3. Розгортання abox
 
 ```bash
-git submodule update --init --recursive
-```
-
-### Розгортання
-
-```bash
-cd abox
-
-# Встановлює tofu, k9s, cloud-provider-kind,
-# ініціалізує та застосовує OpenTofu (KinD + Flux bootstrap)
+cd lab2-abox/abox
 make run
+```
 
-# Переконайся що kubeconfig налаштований
-export KUBECONFIG=~/.kube/config
+Перевірка:
+
+```bash
 kubectl get nodes
-```
-
-Очікуваний результат — 3 вузли зі статусом `Ready`:
-
-```
-NAME                 STATUS   ROLES           AGE
-abox-control-plane   Ready    control-plane   ...
-abox-worker          Ready    <none>          ...
-abox-worker2         Ready    <none>          ...
-```
-
-### Перевірка Flux
-
-```bash
 flux get all -A
-```
-
-Всі ресурси мають бути `Ready: True`.
-
----
-
-## Завдання 2 — Доступ до UI
-
-### Kagent UI + agentgateway (через LoadBalancer)
-
-```bash
-# Отримай IP agentgateway LoadBalancer
-kubectl get svc -n agentgateway-system
-
-# Kagent UI
-open http://<EXTERNAL-IP>/
-
-# kagent API
-open http://<EXTERNAL-IP>/api
-```
-
-### agentgateway Admin UI
-
-```bash
-kubectl port-forward -n agentgateway-system deploy/agentgateway 15000:15000
-open http://localhost:15000
-```
-
-### Flux (перегляд reconciliation)
-
-```bash
-# Стан усіх Flux ресурсів
-flux get all -A
-
-# Події reconciliation
-kubectl get events -n flux-system --sort-by='.lastTimestamp'
 ```
 
 ---
 
-## Завдання 3 — MCP-сервер та агент у Kagent (Beginner)
+## 4. Фікс OpenAI ключа
 
-### 3.1 Підключення моделі
-
-Kagent вже налаштований на OpenAI GPT-4o-mini через `OPENAI_API_KEY` з env-змінної.
-Перевір що секрет існує:
-
-```bash
-kubectl get secret kagent-openai -n kagent
-```
-
-Якщо немає — створи вручну:
+Flux не успадковує env-змінні shell, тому потрібно задати секрет вручну:
 
 ```bash
 kubectl create secret generic kagent-openai \
   --from-literal=OPENAI_API_KEY=$OPENAI_API_KEY \
-  -n kagent
-```
-
-### 3.2 Створення MCP-сервера та агента
-
-```bash
-# Застосуй declarative конфігурацію з k8s/
-kubectl apply -k k8s/
-
-# Перевір ресурси
-kubectl get mcpservers,agents -n kagent
-kubectl get pods -n kagent
-```
-
-### 3.3 Тест агента
-
-Відкрий Kagent UI → вибери агента `k8s-monitor-agent` → запит:
-
-```
-What pods are running in the cluster?
+  -n kagent --dry-run=client -o yaml | kubectl apply -f -
+kubectl rollout restart deployment/kagent-controller -n kagent
 ```
 
 ---
 
-## Завдання 4 — GitOps-розгортання (Advanced)
-
-> MCP-сервер та агент розгортаються через Flux OCI artifacts, а не через прямий `kubectl apply`.
-
-### 4.1 Додай ресурси до releases/
-
-Скопіюй файли з `k8s/` у `abox/releases/`:
+## 5. Відкрити Kagent UI
 
 ```bash
-cp k8s/mcp-k8s-server.yaml abox/releases/
-cp k8s/kagent-agent.yaml   abox/releases/
+kubectl port-forward svc/agentgateway-external 8080:80 -n agentgateway-system
 ```
 
-Додай їх до `abox/releases/kustomization.yaml`:
+Codespaces автоматично запропонує відкрити порт 8080 у браузері (вкладка **Ports**).
 
-```yaml
-resources:
-  - agentgateway.yaml
-  - kagent.yaml
-  - mcp-k8s-server.yaml    # +
-  - kagent-agent.yaml      # +
-```
+---
 
-### 4.2 Налаштуй OCI registry на свій fork
-
-У `abox/bootstrap/variables.tf`:
-
-```hcl
-variable "oci_registry" {
-  default = "oci://ghcr.io/yupyvovarov/abox"
-}
-```
-
-### 4.3 Тригер reconciliation
+## 6. Beginner — kubectl apply
 
 ```bash
-cd abox
+cd lab2-abox
+kubectl apply -k k8s/
+kubectl get mcpservers,agents -n kagent
+```
 
-# Перевір що flux get all -A показує Ready перед пушем
-flux get all -A
+Kagent UI → вибери агента `time-agent` → запитай:
 
-# Bump patch version, tag і push → CI публікує OCI artifact → Flux reconciles
+```
+What time is it now in Kyiv?
+```
+
+---
+
+## 7. Advanced — GitOps через Flux OCI
+
+```bash
+cd lab2-abox
+
+# Підключити другий OCI-репозиторій до Flux
+make apply
+
+# Збампити версію, затегувати і запушити → CI публікує OCI artifact
 make push
-```
 
-Слідкуй за reconciliation:
-
-```bash
+# Слідкуй за reconciliation
 flux get kustomizations -A --watch
 ```
 
@@ -213,12 +100,9 @@ flux get kustomizations -A --watch
 # Логи kagent controller
 kubectl logs -n kagent deploy/kagent-controller -f
 
-# Перегляд усіх Flux ресурсів
-flux get all -A
-
-# Форс-reconciliation (без очікування таймера)
-flux reconcile kustomization releases -n flux-system
+# Форс-reconciliation
+flux reconcile kustomization lab2-releases -n flux-system
 
 # Знищити кластер
-cd abox && make down
+cd lab2-abox/abox && make down
 ```
