@@ -5,6 +5,7 @@ metadata:
   namespace: kagent
 spec:
   transportType: stdio
+  stdioTransport: {}
   deployment:
     image: mcp/time:latest
     cmd: /app/.venv/bin/mcp-server-time
