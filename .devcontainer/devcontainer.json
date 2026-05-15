@@ -28,6 +28,12 @@
   // Ініціалізація submodule після створення Codespace
   "postCreateCommand": "git submodule update --init --recursive",
 
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "16gb",
+    "storage": "32gb"
+  },
+
   "customizations": {
     "vscode": {
       "extensions": [
