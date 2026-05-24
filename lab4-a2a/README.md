@@ -155,6 +155,49 @@ curl -s http://localhost:8082/ \
 
 ---
 
+## 3. Inventory — перелік AI ресурсів кластера
+
+[agentregistry-inventory](https://github.com/den-vasyliev/agentregistry-inventory) — контрол плейн для AI інфраструктури.
+Автоматично сканує кластер і каталогізує MCP servers, агентів, моделі. UI на порті 8080, MCP server на 8083.
+
+### Встановити CRDs та Helm chart
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/den-vasyliev/agentregistry-inventory/main/config/crd/agentregistry.dev_agentcatalogs.yaml \
+  -f https://raw.githubusercontent.com/den-vasyliev/agentregistry-inventory/main/config/crd/agentregistry.dev_mcpservercatalogs.yaml \
+  -f https://raw.githubusercontent.com/den-vasyliev/agentregistry-inventory/main/config/crd/agentregistry.dev_modelcatalogs.yaml \
+  -f https://raw.githubusercontent.com/den-vasyliev/agentregistry-inventory/main/config/crd/agentregistry.dev_skillcatalogs.yaml \
+  -f https://raw.githubusercontent.com/den-vasyliev/agentregistry-inventory/main/config/crd/agentregistry.dev_discoveryconfigs.yaml \
+  -f https://raw.githubusercontent.com/den-vasyliev/agentregistry-inventory/main/config/crd/agentregistry.dev_registrydeployments.yaml
+
+git clone https://github.com/den-vasyliev/agentregistry-inventory.git /tmp/inventory
+helm install agentregistry-inventory /tmp/inventory/charts/agentregistry -n agentregistry --create-namespace
+```
+
+### Застосувати DiscoveryConfig
+
+Конфігурує Inventory сканувати namespace `kagent` де живуть наші агенти та MCP servers:
+
+```bash
+kubectl apply -f lab4-a2a/k8s/discoveryconfig.yaml
+```
+
+### Відкрити UI
+
+```bash
+kubectl port-forward svc/agentregistry-inventory-api -n agentregistry 8083:8080
+```
+
+Відкрити у браузері через вкладку Ports в Codespaces на порті 8083.
+
+### Перевірити список AI ресурсів
+
+```bash
+kubectl get agentcatalogs,mcpservercatalogs -n agentregistry
+```
+
+---
+
 ## Структура файлів
 
 ```
@@ -168,6 +211,7 @@ lab4-a2a/
 │   ├── requirements.txt
 │   └── Dockerfile
 └── k8s/
-    ├── time-agent.yaml      # Deployment + Service
-    └── orchestrator-agent.yaml
+    ├── time-agent.yaml           # Deployment + Service
+    ├── orchestrator-agent.yaml   # Deployment + Service
+    └── discoveryconfig.yaml      # Inventory DiscoveryConfig для kagent namespace
 ```
