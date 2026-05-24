@@ -10,6 +10,26 @@
 
 ---
 
+## A2A агенти vs Kagent агенти
+
+Наші `time-agent` і `orchestrator-agent` існують у двох формах:
+
+| | A2A (Deployment) | Kagent (CRD) |
+|---|---|---|
+| Протокол | A2A JSON-RPC (`message/send`) | AutoGen runtime |
+| Як викликати | `curl POST /` або будь-який A2A клієнт | Kagent UI / API |
+| Визначення | Kubernetes Deployment + Service | `kagent.dev/v1alpha2 Agent` CRD |
+| Видимість | Не в Kagent UI, не в Inventory | Kagent UI + Inventory |
+
+Щоб агенти з'явились у **Kagent UI та Inventory**, потрібно застосувати kagent Agent CRDs:
+
+```bash
+kubectl apply -f lab4-a2a/k8s/kagent-agents.yaml
+kubectl get agents -n kagent
+```
+
+---
+
 ## Передумови
 
 Розгортання відбувається в **GitHub Codespaces** (де є Docker, k3d, kubectl).
