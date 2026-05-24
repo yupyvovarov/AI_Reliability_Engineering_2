@@ -1,0 +1,14 @@
+apiVersion: agentregistry.dev/v1alpha1
+kind: DiscoveryConfig
+metadata:
+  name: environments
+  namespace: agentregistry
+spec:
+  environments:
+    - name: abox
+      cluster:
+        name: local
+        namespace: kagent
+      namespaces:
+        - kagent
+      discoveryEnabled: true

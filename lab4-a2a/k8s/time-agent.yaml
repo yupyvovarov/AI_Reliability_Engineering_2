@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: time-agent
+  namespace: kagent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: time-agent
+  template:
+    metadata:
+      labels:
+        app: time-agent
+    spec:
+      containers:
+        - name: time-agent
+          image: time-agent:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: time-agent
+  namespace: kagent
+spec:
+  selector:
+    app: time-agent
+  ports:
+    - port: 8080
+      targetPort: 8080
