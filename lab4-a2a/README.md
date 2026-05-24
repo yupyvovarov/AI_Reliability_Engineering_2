@@ -107,11 +107,17 @@ docker build -t time-agent:latest time-agent/
 docker build -t orchestrator-agent:latest orchestrator-agent/
 ```
 
-### Завантажити образи в k3d кластер
+### Встановити kind CLI (якщо немає)
 
 ```bash
-k3d image import time-agent:latest -c abox
-k3d image import orchestrator-agent:latest -c abox
+curl -Lo /tmp/kind https://kind.sigs.k8s.io/dl/v0.31.0/kind-linux-amd64
+chmod +x /tmp/kind && sudo mv /tmp/kind /usr/local/bin/kind
+```
+
+### Завантажити образи в kind кластер
+
+```bash
+kind load docker-image time-agent:latest orchestrator-agent:latest --name abox
 ```
 
 ### Застосувати маніфести
