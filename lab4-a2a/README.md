@@ -10,10 +10,30 @@
 
 ---
 
+## A2A агенти vs Kagent агенти
+
+Наші `time-agent` і `orchestrator-agent` існують у двох формах:
+
+| | A2A (Deployment) | Kagent (CRD) |
+|---|---|---|
+| Протокол | A2A JSON-RPC (`message/send`) | AutoGen runtime |
+| Як викликати | `curl POST /` або будь-який A2A клієнт | Kagent UI / API |
+| Визначення | Kubernetes Deployment + Service | `kagent.dev/v1alpha2 Agent` CRD |
+| Видимість | Не в Kagent UI, не в Inventory | Kagent UI + Inventory |
+
+Щоб агенти з'явились у **Kagent UI та Inventory**, потрібно застосувати kagent Agent CRDs:
+
+```bash
+kubectl apply -f lab4-a2a/k8s/kagent-agents.yaml
+kubectl get agents -n kagent
+```
+
+---
+
 ## Передумови
 
-Розгортання відбувається в **GitHub Codespaces** (де є Docker, k3d, kubectl).
-Abox кластер підіймається як в Lab 2.
+Розгортання відбувається в **GitHub Codespaces** (де є Docker, kind, kubectl).
+Abox кластер підіймається як в Lab 2 (KinD, cluster name `abox`).
 
 > MacBook/локально: агентів можна перевірити через venv (див. розділ 1), але розгортання на abox потребує Codespaces.
 
@@ -99,14 +119,6 @@ cd lab2-abox/abox
 make run
 ```
 
-### Збілдити образи
-
-```bash
-cd lab4-a2a
-docker build -t time-agent:latest time-agent/
-docker build -t orchestrator-agent:latest orchestrator-agent/
-```
-
 ### Встановити kind CLI (якщо немає)
 
 ```bash
@@ -114,29 +126,30 @@ curl -Lo /tmp/kind https://kind.sigs.k8s.io/dl/v0.31.0/kind-linux-amd64
 chmod +x /tmp/kind && sudo mv /tmp/kind /usr/local/bin/kind
 ```
 
-### Завантажити образи в kind кластер
+### 2a. A2A Deployment (перевірка протоколу в кластері)
+
+Збілдити образи та завантажити в kind:
 
 ```bash
+cd lab4-a2a
+docker build -t time-agent:latest time-agent/
+docker build -t orchestrator-agent:latest orchestrator-agent/
 kind load docker-image time-agent:latest orchestrator-agent:latest --name abox
 ```
 
-### Застосувати маніфести
+Застосувати A2A Deployments:
 
 ```bash
-kubectl apply -f k8s/
+kubectl apply -f lab4-a2a/k8s/time-agent.yaml
+kubectl apply -f lab4-a2a/k8s/orchestrator-agent.yaml
 kubectl get pods -n kagent
 ```
 
-### Перевірити в кластері
+Перевірити A2A в кластері:
 
 ```bash
-# Port-forward до orchestrator
 kubectl port-forward svc/orchestrator-agent 8082:8080 -n kagent
 
-# Agent Card
-curl http://localhost:8082/.well-known/agent.json | jq
-
-# A2A запит через orchestrator → time-agent
 curl -s http://localhost:8082/ \
   -H "Content-Type: application/json" \
   -d '{
@@ -152,6 +165,24 @@ curl -s http://localhost:8082/ \
     }
   }' | jq '.result.status.message.parts[0].text'
 ```
+
+### 2b. Kagent Agent CRDs (інтеграція з Kagent UI + Inventory)
+
+> **Важливо:** A2A Deployments з namespace `kagent` конфліктують з kagent Agent CRDs (однакові імена, різні лейбли). Перед застосуванням CRDs видали A2A Deployments:
+>
+> ```bash
+> kubectl delete deployment time-agent orchestrator-agent -n kagent
+> kubectl delete service time-agent orchestrator-agent -n kagent
+> ```
+
+Застосувати kagent Agent CRDs:
+
+```bash
+kubectl apply -f lab4-a2a/k8s/kagent-agents.yaml
+kubectl get agents -n kagent
+```
+
+Обидва агенти мають показати `ACCEPTED: True`. Після цього вони з'являться в Kagent UI та Inventory.
 
 ---
 
@@ -278,8 +309,9 @@ lab4-a2a/
 │   ├── requirements.txt
 │   └── Dockerfile
 └── k8s/
-    ├── time-agent.yaml           # Deployment + Service
-    ├── orchestrator-agent.yaml   # Deployment + Service
+    ├── time-agent.yaml           # A2A Deployment + Service (для тестування протоколу)
+    ├── orchestrator-agent.yaml   # A2A Deployment + Service (для тестування протоколу)
+    ├── kagent-agents.yaml        # MCPServer + kagent Agent CRDs (для Kagent UI + Inventory)
     ├── discoveryconfig.yaml      # Inventory DiscoveryConfig для kagent namespace
     └── governance-policy.yaml    # MCPGovernancePolicy для abox кластера
 ```

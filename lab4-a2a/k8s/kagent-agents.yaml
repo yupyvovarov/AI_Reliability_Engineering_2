@@ -1,0 +1,63 @@
+apiVersion: kagent.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: time-mcp
+  namespace: kagent
+spec:
+  transportType: stdio
+  stdioTransport: {}
+  deployment:
+    image: mcp/time:latest
+    cmd: /app/.venv/bin/mcp-server-time
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 250m
+        memory: 256Mi
+---
+apiVersion: kagent.dev/v1alpha2
+kind: Agent
+metadata:
+  name: time-agent
+  namespace: kagent
+spec:
+  type: Declarative
+  description: "Agent that uses time MCP server tools to answer questions about current time and timezones"
+  declarative:
+    modelConfig: default-model-config
+    runtime: python
+    systemMessage: |
+      You are a helpful assistant with access to time tools.
+      Use them to answer questions about current time and timezones.
+    tools:
+    - type: McpServer
+      mcpServer:
+        apiGroup: kagent.dev
+        kind: MCPServer
+        name: time-mcp
+        toolNames:
+        - get_current_time
+        - convert_time
+---
+apiVersion: kagent.dev/v1alpha2
+kind: Agent
+metadata:
+  name: orchestrator-agent
+  namespace: kagent
+spec:
+  type: Declarative
+  description: "Orchestrator agent that delegates time queries to time-agent"
+  declarative:
+    modelConfig: default-model-config
+    runtime: python
+    systemMessage: |
+      You are an orchestrator agent. When a user asks about current time or timezones,
+      delegate the task to the time-agent and return its response.
+    tools:
+    - type: Agent
+      agent:
+        apiGroup: kagent.dev
+        kind: Agent
+        name: time-agent
