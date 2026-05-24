@@ -198,6 +198,73 @@ kubectl get agentcatalogs,mcpservercatalogs -n agentregistry
 
 ---
 
+## 4. MCPG — MCP Security Governance
+
+[mcp-security-governance](https://github.com/techwithhuz/mcp-security-governance) — Kubernetes-native security monitoring для MCP інфраструктури.
+Скануює MCP servers і виставляє security score (0-100, grades A-F) по 7 категоріях (AgentGateway, Auth, RBAC, CORS, TLS, Tool Scope, Hardened Deployment).
+Dashboard на порті 3000.
+
+### Встановити Helm chart
+
+```bash
+# Оновити CRD до актуальної версії
+kubectl apply -f https://raw.githubusercontent.com/techwithhuz/mcp-security-governance/main/deploy/crds/governance-crds.yaml
+
+# Встановити без sample policy (sample несумісний з CRD схемою v0.22.2)
+helm install mcp-governance \
+  oci://ghcr.io/techwithhuz/charts/mcp-governance \
+  --version 0.22.2 \
+  --namespace mcp-governance \
+  --create-namespace \
+  --set samples.install=false
+```
+
+### Застосувати Governance Policy
+
+```bash
+kubectl apply -f lab4-a2a/k8s/governance-policy.yaml
+```
+
+### Відкрити Dashboard
+
+```bash
+kubectl port-forward svc/mcp-governance-dashboard -n mcp-governance 3001:3000
+```
+
+Відкрити у браузері через вкладку Ports в Codespaces на порті 3001.
+
+---
+
+## 5. Qdrant — Vector Database
+
+[qdrant-helm](https://github.com/qdrant/qdrant-helm) — Helm chart для розгортання Qdrant vector database на Kubernetes.
+
+### Встановити Helm chart
+
+```bash
+helm repo add qdrant https://qdrant.github.io/qdrant-helm
+helm repo update
+helm upgrade -i qdrant qdrant/qdrant \
+  --namespace qdrant \
+  --create-namespace
+```
+
+### Перевірити розгортання
+
+```bash
+kubectl get pods -n qdrant
+kubectl get svc -n qdrant
+```
+
+### Перевірити REST API
+
+```bash
+kubectl port-forward svc/qdrant -n qdrant 6333:6333
+curl http://localhost:6333/healthz
+```
+
+---
+
 ## Структура файлів
 
 ```
@@ -213,5 +280,6 @@ lab4-a2a/
 └── k8s/
     ├── time-agent.yaml           # Deployment + Service
     ├── orchestrator-agent.yaml   # Deployment + Service
-    └── discoveryconfig.yaml      # Inventory DiscoveryConfig для kagent namespace
+    ├── discoveryconfig.yaml      # Inventory DiscoveryConfig для kagent namespace
+    └── governance-policy.yaml    # MCPGovernancePolicy для abox кластера
 ```
