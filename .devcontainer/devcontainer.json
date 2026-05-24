@@ -8,7 +8,9 @@
     // kubectl + helm (без minikube)
     "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {
       "minikube": "none"
-    }
+    },
+    // SSH сервер для gh codespace ssh
+    "ghcr.io/devcontainers/features/sshd:1": {}
   },
 
   // Порти для UI доступу до компонентів abox
