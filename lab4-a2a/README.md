@@ -12,13 +12,14 @@
 
 ## Передумови
 
-- Python 3.12+
-- Docker
-- kubectl налаштований на abox (Lab 2 кластер)
+Розгортання відбувається в **GitHub Codespaces** (де є Docker, k3d, kubectl).
+Abox кластер підіймається як в Lab 2.
+
+> MacBook/локально: агентів можна перевірити через venv (див. розділ 1), але розгортання на abox потребує Codespaces.
 
 ---
 
-## 1. Локальна перевірка
+## 1. Локальна перевірка (venv)
 
 ### Створити virtual environment
 
@@ -63,6 +64,8 @@ curl -s http://localhost:8081/ \
 ### Запустити orchestrator-agent (в окремому терміналі)
 
 ```bash
+cd lab4-a2a
+source .venv/bin/activate
 TIME_AGENT_URL=http://localhost:8081 uvicorn orchestrator-agent.main:app --port 8082 --reload
 ```
 
@@ -87,7 +90,14 @@ curl -s http://localhost:8082/ \
 
 ---
 
-## 2. Розгортання на abox (k3d)
+## 2. Розгортання на abox (GitHub Codespaces)
+
+### Запустити abox кластер
+
+```bash
+cd lab2-abox/abox
+make run
+```
 
 ### Збілдити образи
 
