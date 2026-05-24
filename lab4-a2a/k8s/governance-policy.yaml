@@ -1,0 +1,21 @@
+apiVersion: governance.mcp.io/v1alpha1
+kind: MCPGovernancePolicy
+metadata:
+  name: abox-policy
+  namespace: mcp-governance
+spec:
+  clusterName: abox
+  targetNamespaces:
+    - kagent
+  scanInterval: "5m"
+  requireAgentGateway: true
+  requireJWTAuth: false
+  requireRBAC: false
+  requireCORS: false
+  requireTLS: false
+  requirePromptGuard: false
+  requireRateLimit: false
+  requireHardenedDeployment: false
+  maxToolsWarning: 20
+  maxToolsCritical: 50
+  enableAuditLogging: false
