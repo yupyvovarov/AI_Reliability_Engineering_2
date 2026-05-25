@@ -1,460 +1,259 @@
 # Lab 7 — Vin's Questions: AI Infrastructure Research
 
-Дослідження та оцінка власного сетапу AI-інфраструктури на базі курсу AI Reliability Engineering 2.0.
+**Stack:** kagent · kgateway / agentgateway · A2A protocol · MCP · Qdrant · abox (KinD) · Flux GitOps
 
-**Стек:** kagent · kgateway (agentgateway) · A2A protocol · MCP · Qdrant · abox (KinD) · Flux GitOps
+> All claims below are verified against official documentation:
+> [kagent.dev/docs](https://kagent.dev/docs), [kgateway.dev/docs](https://kgateway.dev/docs),
+> [google.github.io/adk-docs](https://google.github.io/adk-docs), [docs.vllm.ai](https://docs.vllm.ai),
+> [github.com/llm-d/llm-d](https://github.com/llm-d/llm-d), [github.com/jlowin/fastmcp](https://github.com/jlowin/fastmcp).
 
 ---
 
 ## 1. How could we handle 'agent got stuck' scenarios?
 
-У нашому сетапі є кілька рівнів захисту від "застрягання":
+Our setup has multiple protection layers against stuck agents:
 
-**Kubernetes-рівень** (для kagent Agents):
-- Liveness probe на Pod перезапускає зависший контейнер автоматично
-- `terminationGracePeriodSeconds` обмежує час shutdown
+**Kubernetes level (kagent Agents):**
+- Liveness probe automatically restarts a hanging Pod.
+- `terminationGracePeriodSeconds` bounds the shutdown time.
 
-**AutoGen runtime (kagent):**
-- `max_consecutive_auto_reply` — максимальна кількість авто-відповідей перед зупинкою
-- `max_turns` — hard limit на кількість ходів у multi-agent розмові
+**kagent engine runtime:**
+Since v0.6, kagent supports two runtimes selected via the `runtime` field in the Agent spec:
+- **Python ADK** (default) — built on top of [Google ADK](https://google.github.io/adk-docs/), supports CrewAI / LangGraph / OpenAI integrations.
+- **Go ADK** — native Go implementation with faster startup (~2 s vs ~15 s) and lower resource consumption.
 
-**A2A protocol layer (наші FastAPI агенти):**
-- HTTP client timeout у `orchestrator-agent` при виклику `time-agent`
-- Якщо `time-agent` не відповідає за N секунд — `orchestrator` повертає помилку клієнту
+Both runtimes provide `max_llm_calls` in `RunConfig` (default **500**), which caps the total number of LLM invocations per invocation context and is the primary guard against runaway agent loops. For deterministic workflow loops, the `LoopAgent` workflow type has a separate `MaxIterations` field.
 
-**Приклад фіксу для orchestrator-agent:**
-```python
-import httpx
+**A2A protocol layer (our FastAPI agents):**
+- HTTP client timeout in `orchestrator-agent` when calling `time-agent`.
+- If `time-agent` does not respond within N seconds — orchestrator returns an error to the caller.
 
-async with httpx.AsyncClient(timeout=10.0) as client:  # 10s timeout
-    response = await client.post(TIME_AGENT_URL, json=payload)
-```
-
-**Рекомендація для production:** додати dead-letter queue або retry-with-backoff на рівні оркестратора, та alert у Prometheus при аномальній тривалості inference.
+**Production recommendation:** add a dead-letter queue or retry-with-backoff at the orchestrator level, and a Prometheus alert on abnormal inference duration.
 
 ---
 
 ## 2. Any automatic timeout/circuit breaker patterns coming out from this framework?
 
-**kgateway (agentgateway)** підтримує нативні timeout та retry через Gateway API:
+**kgateway** has native timeout and retry support via the standard Gateway API. An `HTTPRoute` rule supports two timeout fields:
+- `timeouts.request` — overall request timeout (max duration for the gateway to respond to the client).
+- `timeouts.backendRequest` — per-backend attempt timeout. Must be ≤ `request`.
 
-```yaml
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-spec:
-  rules:
-  - timeouts:
-      request: 30s         # загальний timeout запиту
-      backendRequest: 15s  # timeout до конкретного backend
-    backendRefs:
-    - name: openai-backend
-      port: 443
-```
+**Circuit breaker** in kgateway is implemented via `BackendConfigPolicy`. Two related mechanisms exist:
 
-**Circuit breaker** у kgateway реалізується через `BackendLBPolicy` з passive health checking:
-- Eject нездорових backends після N consecutive failures
-- Cooldown period перед повторним включенням
+- **Outlier detection** — passive health checking. Configurable fields include `consecutive5xx` (eject after N consecutive 5xx), `interval` (analysis interval), `baseEjectionTime` (how long the host stays ejected), and `maxEjectionPercent` (cap on the percentage of hosts that can be ejected simultaneously).
+- **Circuit breakers** (added to `BackendConfigPolicy` per kgateway release notes) — enforces connection / request limits per backend to prevent cascading failures.
 
-**kagent сам по собі** не має вбудованого circuit breaker — він делегує це Kubernetes і kgateway. Для повноцінного circuit breaker на рівні service mesh рекомендується Istio (з `DestinationRule` + `outlierDetection`), або реалізація на рівні коду агента (бібліотека `tenacity` для Python retry/circuit breaker).
+**kagent itself** has no built-in circuit breaker — it delegates resilience to Kubernetes and the gateway. For a full circuit breaker at the service mesh level, Istio (`DestinationRule` + `outlierDetection`) is the typical complement. For application-level retries, the Python `tenacity` library works inside FastAPI agents.
 
 ---
 
 ## 3. How does kgateway handle model failover?
 
-kgateway визначає кілька `LLMBackend` ресурсів і маршрутизує через `AIGatewayRoute`:
+kgateway models **AI failover inside a single Backend resource**, not via weighted HTTPRoute backends.
 
-```yaml
-apiVersion: aigateway.envoyproxy.io/v1alpha1
-kind: AIGatewayRoute
-spec:
-  rules:
-  - matches:
-    - headers:
-      - name: x-model-preference
-        value: openai
-    backendRefs:
-    - name: openai-backend
-      weight: 100
-  - backendRefs:                    # fallback rule
-    - name: openai-backend
-      weight: 80
-    - name: claude-backend          # 20% або failover
-      weight: 20
-```
+You define a `Backend` with `spec.type: AI` (Envoy data plane) or an `AgentgatewayBackend` (agentgateway data plane). Inside the AI spec there is a list of **priority groups**, each containing one or more LLM providers. The HTTPRoute simply references that single Backend.
 
-**Як відбувається failover:**
-1. kgateway (Envoy under the hood) відстежує health кожного `LLMBackend`
-2. При HTTP 5xx або timeout — backend тимчасово виключається з ротації
-3. Трафік автоматично перенаправляється на наступний backend за пріоритетом/вагою
-4. Після cooldown backend знову включається (passive health check)
+How it behaves at runtime:
+
+1. Requests are first load-balanced across all providers inside the **highest-priority group**.
+2. If every provider in that group becomes unhealthy (5xx, rate-limit, timeout), traffic falls back to the **next priority group**.
+3. Provider health is tracked passively (similar to outlier detection); when a provider recovers it is re-included in rotation.
+
+A typical cost-optimised pattern is: priority group 1 — cheap models (e.g. `gpt-3.5-turbo`, `claude-3-5-haiku`); priority group 2 — premium fallback (e.g. `gpt-4.1`, `claude-opus`). Load balancing happens **within** a group; failover happens **between** groups.
+
+> ⚠️ In kgateway **v2.2.0** the AI Gateway and Inference Extension were removed from the Envoy data plane — AI backends are now supported only via the **agentgateway** data plane (`apiVersion: agentgateway.dev/v1alpha1`, `kind: AgentgatewayBackend`).
 
 ---
 
 ## 4. Can we automatically switch from OpenAI to Claude to local model?
 
-Так, це нативний use case для kgateway. Конфігурація трьох провайдерів:
+Yes — using the same `priorityGroups` mechanism described in Q3, plus an OpenAI-compatible local backend.
 
-```yaml
-# LLMBackend #1 — OpenAI (primary)
-apiVersion: aigateway.envoyproxy.io/v1alpha1
-kind: LLMBackend
-metadata:
-  name: openai-backend
-spec:
-  schema:
-    name: OpenAI
-  backendRef:
-    name: openai-service
----
-# LLMBackend #2 — Anthropic Claude
-apiVersion: aigateway.envoyproxy.io/v1alpha1
-kind: LLMBackend
-metadata:
-  name: claude-backend
-spec:
-  schema:
-    name: OpenAI           # Claude via OpenAI-compatible API
-  backendRef:
-    name: claude-service
----
-# LLMBackend #3 — local vLLM
-apiVersion: aigateway.envoyproxy.io/v1alpha1
-kind: LLMBackend
-metadata:
-  name: vllm-backend
-spec:
-  schema:
-    name: OpenAI           # vLLM also exposes OpenAI-compatible API
-  backendRef:
-    name: vllm-service
-```
+Each provider (OpenAI, Anthropic, a local vLLM endpoint, AWS Bedrock, etc.) is declared inside one of the priority groups of a **single AI Backend**. For a local model served by vLLM, you use the `openai` provider type with a `customHost` pointing at the in-cluster vLLM service — vLLM exposes an OpenAI-compatible API, so no special adapter is required.
 
-**AIGatewayRoute** з priority-based failover: OpenAI → Claude → vLLM.
+Priority chain example for our setup: OpenAI → Anthropic → local vLLM. The gateway promotes the next group automatically when the current one is unhealthy.
 
-У **kagent** `modelConfig` вказує на конкретний `LLMBackend` через kgateway — змінюючи `default-model-config`, можна переключити всіх агентів одночасно.
+In **kagent**, agents reference a `ModelConfig` that targets the kgateway endpoint. Switching the cluster-wide default behaviour requires changing one ModelConfig (e.g. `default-model-config`) instead of editing every agent.
 
 ---
 
 ## 5. Could we seamlessly handle the response formats from these providers?
 
-**Так** — і це одна з ключових переваг kgateway.
+**Yes** — and this is one of the main reasons to put kgateway in front of multiple LLM providers.
 
-Всі три провайдери нормалізуються до **OpenAI Chat Completions API формату**:
+All supported providers are normalized to the **OpenAI Chat Completions API format**:
 
-| Provider | Native format | kgateway обробляє |
-|----------|--------------|-------------------|
-| OpenAI | OpenAI format | прозоро |
-| Claude (Anthropic) | Anthropic Messages API | конвертує → OpenAI |
-| vLLM local | OpenAI-compatible | прозоро |
-| AWS Bedrock | Bedrock format | конвертує → OpenAI |
+| Provider          | Native format            | kgateway behavior            |
+|-------------------|--------------------------|------------------------------|
+| OpenAI            | OpenAI                   | transparent pass-through     |
+| Claude (Anthropic)| Anthropic Messages API   | converts → OpenAI            |
+| vLLM (local)      | OpenAI-compatible        | transparent pass-through     |
+| AWS Bedrock       | Bedrock                  | converts → OpenAI            |
+| Gemini            | Gemini                   | converts → OpenAI            |
 
-kagent agents отримують уніфіковану відповідь незалежно від backend — переключення між провайдерами не потребує змін у коді агента.
+kagent agents receive a unified response regardless of which backend served the request — switching between providers requires no changes in agent code.
 
-**Застереження:** деякі Claude-специфічні можливості (extended thinking, vision з PDF) можуть не мати прямого маппінгу — для них потрібен нативний Anthropic SDK.
+**Caveat:** provider-specific capabilities (Anthropic extended thinking, Bedrock prompt caching, Gemini search grounding) do not have a direct mapping into the OpenAI schema. For those features the native SDK or a provider-specific passthrough route is required.
 
 ---
 
 ## 6. Can we version the agents built from kagent?
 
-**Так**, через GitOps (Flux, як у Lab 2):
+**Yes**, via GitOps (Flux, as in Lab 2). The mechanism is the standard Kubernetes one — kagent does **not** introduce a custom `version` field in the Agent CRD; versioning is achieved through Git history, Kustomize overlays, and labels.
 
-```
-lab2-abox/
-└── apps/
-    └── time-agent/
-        ├── v1/
-        │   └── agent.yaml    # kagent Agent CRD v1
-        └── v2/
-            └── agent.yaml    # kagent Agent CRDs v2
-```
+Practical pattern:
 
-**Механізм версіонування:**
-1. Кожен `Agent` CRD — це Git commit → OCI artifact → Flux reconciles
-2. Kubernetes labels: `app.kubernetes.io/version: "2.0.0"` на CRD metadata
-3. Kustomize overlays для різних версій (`kustomization.yaml` з `namePrefix: v2-`)
-4. Flux `Kustomization` з `suspend: true` для заморозки конкретної версії
+1. Each `Agent` CRD change is a Git commit → OCI artifact → Flux reconciles into the cluster.
+2. Use Kubernetes labels such as `app.kubernetes.io/version` on the Agent metadata to make versions queryable.
+3. Use Kustomize overlays for different environments / versions (`namePrefix`, patches).
+4. Use Flux `Kustomization` with `suspend: true` to freeze a specific version on a specific cluster.
+5. Rely on the built-in `metadata.generation` and `metadata.resourceVersion` for in-cluster tracking.
 
-**Важливо:** kagent CRD spec сам по собі не має `version` поля — версіонування відбувається через Git history та Kubernetes resource versioning (resourceVersion, generation).
+For BYO agents (where the agent is shipped as a container image rather than declaratively configured), versioning is just the container image tag — same as any other Kubernetes workload.
 
 ---
 
 ## 7. Any blue/green or canary deployment patterns for agents?
 
-Оскільки kagent `Agent` CRD створює Kubernetes `Deployment` під капотом, стандартні K8s патерни застосовні:
+Since a kagent `Agent` CRD ultimately runs as a Kubernetes Pod, **standard K8s deployment patterns apply**.
 
 **Blue/Green:**
-```yaml
-# Blue (stable)
-apiVersion: kagent.dev/v1alpha2
-kind: Agent
-metadata:
-  name: time-agent-blue
-  labels:
-    slot: blue
----
-# Green (new version)
-apiVersion: kagent.dev/v1alpha2
-kind: Agent
-metadata:
-  name: time-agent-green
-  labels:
-    slot: green
-```
-Перемикання: змінити selector у `Service` з `blue` → `green`.
+Define two Agent resources (e.g. `time-agent-blue` and `time-agent-green`) with distinguishing labels. Switch live traffic by updating the `Service` selector from `slot: blue` to `slot: green`. Rollback is one selector change.
 
-**Canary через HTTPRoute:**
-```yaml
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-spec:
-  rules:
-  - backendRefs:
-    - name: time-agent-stable
-      weight: 90
-    - name: time-agent-canary
-      weight: 10        # 10% трафіку на нову версію
-```
+**Canary via HTTPRoute:**
+A standard Gateway API `HTTPRoute` can split traffic between two backend Services using `backendRefs[].weight` — for example, 90% to the stable agent service and 10% to the canary. This is purely Gateway API and is not kagent-specific.
 
-**Flagger** (з Flux) може автоматизувати canary: аналізує метрики (latency, error rate) і поступово збільшує вагу канарки або робить rollback.
+**Progressive delivery with Flagger** (works with Flux):
+[Flagger](https://fluxcd.io/flagger/) automates the canary lifecycle — it watches a target Deployment, gradually shifts traffic, analyses metrics (success rate, latency) against a defined SLO, and either promotes the new version or rolls back. Flagger supports both blue/green and canary modes across Istio, NGINX, Gateway API, and other meshes/ingress controllers.
 
 ---
 
 ## 8. What's the fastmcp-python framework mentioned?
 
-[fastmcp](https://github.com/jlowin/fastmcp) — Python фреймворк для швидкого створення MCP серверів з декларативним API:
+[fastmcp](https://github.com/jlowin/fastmcp) — a Python framework for building MCP servers and clients with a decorator-based API.
 
-```python
-from fastmcp import FastMCP
+**What fastmcp provides:**
+- Automatic JSON Schema generation for tools from Python type hints.
+- Pluggable transports (stdio / SSE / streamable-HTTP) selected automatically from the connection string.
+- Built-in argument validation via Pydantic.
+- High-level primitives for Tools, Resources, Prompts, and (in 3.0) Apps with interactive UIs.
 
-mcp = FastMCP("My Server")
-
-@mcp.tool()
-def get_current_time(timezone: str) -> str:
-    """Returns current time for given timezone."""
-    import pytz
-    from datetime import datetime
-    tz = pytz.timezone(timezone)
-    return datetime.now(tz).isoformat()
-
-@mcp.resource("config://settings")
-def get_settings() -> dict:
-    return {"version": "1.0"}
-
-if __name__ == "__main__":
-    mcp.run()  # auto-selects stdio or SSE transport
-```
-
-**Що дає fastmcp:**
-- Автоматична генерація JSON Schema для tools з Python type hints
-- Автоматичний вибір транспорту (stdio / SSE / streamable-http)
-- Вбудована валідація аргументів (через Pydantic)
-- З листопада 2024 — офіційна частина [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk)
+**Important history detail:** FastMCP **1.0** was contributed to the official MCP Python SDK in 2024 and is available there as `mcp.server.fastmcp`. **FastMCP 2.0 and 3.0** are a separate, actively-developed standalone project (originally `jlowin/fastmcp`, now maintained by PrefectHQ) that adds a client library, server proxying/composition, OpenAPI/FastAPI integration, and many other features beyond the SDK baseline. For new servers today, the standalone package is the recommended path.
 
 ---
 
 ## 9. Is it the easiest path to MCP?
 
-**Так**, fastmcp — найнижчий поріг входу для Python MCP серверів на сьогодні.
+**Yes**, fastmcp has the lowest entry barrier for Python MCP servers today. According to the project README, some version of fastmcp powers ~70% of MCP servers across all languages.
 
-| Підхід | Складність | Коли використовувати |
-|--------|-----------|---------------------|
-| **fastmcp** | низька | більшість Python MCP серверів |
-| Raw MCP SDK (Python) | середня | потрібен повний контроль над протоколом |
-| mcp-go | середня | Go сервіси |
-| TypeScript MCP SDK | середня | Node.js екосистема |
-| Ручна реалізація JSON-RPC | висока | специфічні транспорти |
+| Approach                          | Complexity | When to use                                  |
+|-----------------------------------|------------|----------------------------------------------|
+| **fastmcp**                       | low        | most Python MCP servers                      |
+| Raw MCP Python SDK                | medium     | when you need full control over the protocol |
+| mcp-go                            | medium     | Go services                                  |
+| TypeScript MCP SDK                | medium     | Node.js ecosystem                            |
+| Manual JSON-RPC implementation    | high       | custom transports                            |
 
-У наших лабах ми використовували `mcp/time` (офіційний образ від Anthropic) — він теж побудований на fastmcp-підходах. Для кастомних MCP серверів у наступних проектах — fastmcp є першим вибором.
-
----
-
-## 10. About finops: how much control I can have?
-
-Контроль залежить від рівня стека:
-
-**kgateway рівень** (найбільший контроль):
-- `LLMRequestCost` — ліміт токенів per route:
-```yaml
-apiVersion: aigateway.envoyproxy.io/v1alpha1
-kind: AIGatewayRoute
-spec:
-  llmRequestCosts:
-  - inputCost: 0.03      # $/1K input tokens
-    outputCost: 0.06     # $/1K output tokens
-    budget: 100.0        # $ daily budget
-```
-- Rate limiting на рівні HTTPRoute (requests/хвилину)
-- Prometheus metrics для відстеження витрат у Grafana
-
-**kagent рівень:**
-- `modelConfig` визначає який backend використовується — можна призначати дешевший model для конкретних агентів
-- Немає вбудованого бюджет-трекера
-
-**Агент-рівень (кастомний):**
-- Middleware у FastAPI агентах для логування token usage з кожної відповіді
-- Зберігання в Qdrant або time-series DB для аналізу
+In our labs we used the official `mcp/time` image. For custom MCP servers in Python — fastmcp is the first choice.
 
 ---
 
-## 11. Token level / per agent level
+## 10. About FinOps: how much control can I have?
 
-**Token-level контроль:**
-- kgateway: ліміти на `max_tokens` per route (HTTPRoute filter або `LLMPolicy`)
-- AutoGen (kagent): `llm_config` з `max_tokens` параметром
+Control depends on the stack layer. The picture has changed recently because **agentgateway now has native token-based rate limiting**, which fills the historical gap.
+
+**Gateway level (kgateway / agentgateway):**
+- **Request-based** local rate limiting via `TrafficPolicy.spec.rateLimit.local` (token bucket on request count per route).
+- **Token-based** local rate limiting (counts LLM input/output tokens) via the same `TrafficPolicy` mechanism — available for agentgateway-class routes from **v2.1.0** (tracked in kgateway issue #11844, now closed).
+- **Global** rate limiting via an external rate-limit service (Envoy ratelimit protocol).
+- Prometheus metrics exported by the proxy — request counts, latency, and per-provider token usage in Grafana.
+
+**kagent level:**
+- `ModelConfig` selects which backend / model an agent uses — cheap models can be pinned to specific agents.
+- ADK `RunConfig.max_llm_calls` caps the number of LLM invocations per session (per-invocation cost ceiling).
+- No built-in cumulative budget tracker on the kagent side.
+
+**Agent application level (custom):**
+- FastAPI middleware to log `usage.total_tokens` from each response into Prometheus or a time-series store.
+- External budget enforcement layer (e.g. Redis-backed) called before each LLM request.
+
+---
+
+## 11. Token level / per-agent level
+
+**Token level:**
+- agentgateway TrafficPolicy: native token-counting local rate limit (from v2.1.0) — independent of request count, useful because LLM costs are token-driven, not request-driven.
+- ADK `ModelConfig` / `GenerateContentConfig.max_output_tokens` caps response length per call.
+- kagent `ModelConfig.maxTokens` is the declarative way to set the per-request output cap for all agents using that config.
 
 **Per-agent level:**
-- Кожен kagent `Agent` → окремий HTTPRoute → окремі ліміти
-- Різні агенти можуть мати різні `modelConfig` → різні бекенди з різними ціновими моделями
-
-```yaml
-# Дорогий агент (orchestrator) — gpt-4o
-apiVersion: kagent.dev/v1alpha2
-kind: Agent
-metadata:
-  name: orchestrator-agent
-spec:
-  declarative:
-    modelConfig: gpt4o-model-config   # дорогий, але розумний
-
----
-# Дешевий агент (time lookup) — gpt-4o-mini
-apiVersion: kagent.dev/v1alpha2
-kind: Agent
-metadata:
-  name: time-agent
-spec:
-  declarative:
-    modelConfig: gpt4o-mini-config    # дешевший для простих задач
-```
+- Each kagent `Agent` is reachable via a distinct HTTPRoute → distinct TrafficPolicy → independent token / request limits per agent.
+- Different agents can reference different `ModelConfig` resources, pointing at different providers with different pricing — e.g. an expensive orchestrator on a flagship model and cheap utility agents on a small model.
 
 ---
 
 ## 12. Can I implement custom cost controls?
 
-Так. Три підходи від простого до складного:
+Yes. Three approaches, from simplest to most flexible:
 
-**1. kgateway LLMPolicy** (без коду):
-```yaml
-apiVersion: aigateway.envoyproxy.io/v1alpha1
-kind: LLMPolicy
-metadata:
-  name: cost-control
-spec:
-  targetRef:
-    kind: HTTPRoute
-    name: agent-route
-  tokenRateLimit:
-    requestsPerUnit: 1000    # tokens/minute
-    unit: Minute
-```
-
-**2. FastAPI middleware** (у наших A2A агентах):
-```python
-@app.middleware("http")
-async def track_tokens(request: Request, call_next):
-    response = await call_next(request)
-    # parse response body, extract usage.total_tokens
-    # store to Prometheus counter or Qdrant
-    return response
-```
-
-**3. Prometheus + Grafana alerting:**
-- Метрика `ai_tokens_used_total{agent="orchestrator"}` 
-- Alert при перевищенні бюджету → webhook → автоматичне `kubectl patch` для зміни rate limit
+1. **kgateway / agentgateway TrafficPolicy** — request-rate and token-rate limiting with no code changes. Attach the policy to an HTTPRoute and define a token-bucket per agent route.
+2. **FastAPI middleware** in the A2A agents — parse each LLM response, extract `usage.total_tokens`, push to a Prometheus counter labelled by agent name. Combine with Alertmanager for budget breach alerts.
+3. **Prometheus + Grafana + automation** — alert on a `tokens_used_total{agent="…"}` threshold, route the alert to a webhook that tightens the TrafficPolicy rate limit or scales the agent down.
 
 ---
 
-## 13. Per-agent budgets or depth of Token limits
+## 13. Per-agent budgets or depth of token limits
 
-**Depth limit** (кількість ходів у ланцюжку):
+**Depth limit (number of LLM calls in a chain):**
+This is what `RunConfig.max_llm_calls` controls in the ADK runtime — it caps the total LLM invocations per invocation context (default 500). For deterministic looping workflows, `LoopAgent.MaxIterations` is the equivalent. Both are configured in the agent application code; there is no corresponding field on the kagent Agent CRD today.
 
-AutoGen (kagent runtime) підтримує:
-```python
-# У kagent Agent CRD через systemMessage або кастомний runtime config:
-max_consecutive_auto_reply = 5    # зупинити після 5 авто-відповідей
-max_turns = 10                    # або після 10 ходів загалом
-```
+**Per-agent cumulative budget:**
+Not natively implemented in kagent. Practical options:
+1. **agentgateway TrafficPolicy with token-based local rate limit** — simplest, but enforced per time window rather than as a true cumulative spend cap.
+2. **External budget tracker** — Redis / a TS DB keeps `{agent_name: tokens_used_today}`, agent middleware checks before each LLM call.
+3. **Kubernetes `ResourceQuota`** — does not cap tokens, but can cap CPU/memory for the agent Pod, which indirectly limits throughput.
 
-**Per-agent budget** (кумулятивний):
-Поки не реалізовано нативно у kagent. Підходи:
-1. **kgateway per-route rate limit** — найпростіше, але per-request, не кумулятивно
-2. **External budget tracker** — Redis/Qdrant зберігає `{agent_name: tokens_used_today}`, агент перевіряє перед кожним LLM call
-3. **Kubernetes ResourceQuota** — не для токенів, але обмежує CPU/Memory для Pod агента
-
-**Roadmap:** kagent та kgateway активно розвиваються — per-agent token budgets очікуються у майбутніх релізах.
+**Roadmap note:** both kagent and kgateway/agentgateway are evolving quickly — true per-agent token budgets are a likely future addition.
 
 ---
 
-## 14. vLLM suitable for agents with many back-and-forth tool calls, or is it better for single shot inference?
+## 14. Is vLLM suitable for agents with many back-and-forth tool calls, or is it better for single-shot inference?
 
-**vLLM добре підходить для обох**, але з нюансами:
+**vLLM works well for both**, with some nuances for agentic workloads.
 
-**Single-shot inference** — де vLLM максимально ефективний:
-- Continuous batching: 100+ паралельних запитів в одному GPU batch
-- PagedAttention: ефективне використання GPU пам'яті
-- High throughput > low latency priority
+**Single-shot inference** — where vLLM is most efficient:
+- Continuous batching: many parallel requests share a GPU batch.
+- PagedAttention: efficient GPU memory usage.
+- Optimised for high throughput.
 
-**Agentic workloads (багато tool calls)** — vLLM також підходить, з умовами:
-- **Prefix caching** (`--enable-prefix-caching`): system prompt кешується між turns → значна економія часу для агентів з довгим system prompt
-- **Speculative decoding**: зменшує latency для коротких відповідей (tool call JSON)
-- **KV cache reuse**: між запитами від одного агента — ефективно якщо контекст не змінюється
+**Agentic workloads (many tool calls)** — vLLM also handles this well, especially with:
+- **Automatic Prefix Caching (APC)** — enabled via `enable_prefix_caching=True` on the engine (or `--enable-prefix-caching` on `vllm serve`). The KV cache of an already-processed prefix (system prompt, conversation history) is reused for new requests that share that prefix. Per vLLM docs, this delivers large wins for multi-round conversations and long-document workloads, where the shared prefix dominates and only the new suffix needs prefill.
+- **Speculative decoding** — reduces latency for short responses such as tool-call JSON.
+- **KV cache reuse** between same-prefix requests — effective when the agent's system prompt and tool definitions stay constant across turns.
 
-**Проблема** для довгих agentic chains: KV cache фрагментується при кожному новому tool result → cache miss зростає. Тут допомагає llm-d (питання 15).
+**Limit for long agentic chains:** as the agent appends each tool result to the context, the prefix that future calls share with past calls shrinks, so cache hit rate degrades over very long sessions. This is exactly the gap llm-d is designed to close (Q15).
 
-**Висновок:** vLLM + prefix caching = хороший вибір для агентів з повторюваними system prompts. Для максимальної ефективності agentic chains — поєднувати з llm-d.
-
----
-
-## 15. llm-d's scheduler — helps when agents make 15 LLM calls?
-
-**Так**, і це один з ключових use cases для llm-d.
-
-**Що таке llm-d:**
-[llm-d](https://github.com/llm-d/llm-d) — Kubernetes-native distributed inference scheduler від Red Hat/IBM. Реалізує **disaggregated prefill/decode** та **KV-cache aware routing**.
-
-**Як допомагає при 15 LLM calls:**
-
-```
-Agent call #1:  System prompt (2000 tokens) + message → prefill всього → decode
-Agent call #2:  Same system prompt → llm-d routes to node with warm KV cache!
-Agent call #3:  Same context prefix → cache HIT → skip prefill → тільки decode
-...
-Agent call #15: Majority of prefill from cache → ~3-5x faster than cold
-```
-
-**Ключові можливості llm-d для агентів:**
-1. **KV Cache Router**: відстежує який inference node має який KV cache → routing на "теплий" вузол
-2. **Disaggregated prefill**: prefill виконується на окремих вузлах (CPU-heavy), decode — на GPU → паралелізм
-3. **Prefix-aware scheduling**: агентські ланцюжки з спільним prefix роутяться на той самий pod
-
-**Порівняння:**
-
-| Сценарій | без llm-d | з llm-d |
-|---------|-----------|---------|
-| 15 calls, same system prompt | 15x full prefill | 1x prefill + 14x cache hit |
-| Latency per call | ~2-3s | ~0.3-0.5s (cached) |
-| GPU utilization | низька (sequential) | висока (batched prefill) |
-
-**У нашому abox сетапі:** llm-d можна розгорнути поруч з vLLM як scheduler layer — агенти продовжують звертатись до OpenAI-compatible endpoint, але llm-d оптимізує routing між GPU вузлами.
+**Conclusion:** vLLM + prefix caching is a strong choice for agents with stable system prompts and many tool calls. For maximum efficiency across distributed inference at scale, combine vLLM with llm-d.
 
 ---
 
-## Підсумок
+## 15. llm-d's scheduler — does it help when agents make 15 LLM calls?
 
-| # | Питання | Відповідь у нашому сетапі |
-|---|---------|--------------------------|
-| 1 | Agent got stuck | K8s liveness probe + AutoGen max_turns + HTTP timeout |
-| 2 | Timeout/circuit breaker | kgateway HTTPRoute timeouts + passive health check |
-| 3 | Model failover | kgateway AIGatewayRoute з weighted/priority backends |
-| 4 | Auto-switch OpenAI→Claude→local | kgateway LLMBackend failover chain |
-| 5 | Response format normalization | kgateway конвертує все до OpenAI format |
-| 6 | Agent versioning | GitOps (Flux) + Kubernetes labels/Kustomize |
-| 7 | Blue/green / canary | K8s Deployment patterns + HTTPRoute weights + Flagger |
-| 8 | fastmcp-python | Декоратор-based MCP framework, частина офіційного MCP SDK |
-| 9 | Easiest path to MCP | Так, fastmcp — найнижчий поріг для Python |
-| 10 | FinOps control | kgateway LLMPolicy + Prometheus metrics |
-| 11 | Token/per-agent level | kgateway per-route + різні modelConfig per agent |
-| 12 | Custom cost controls | kgateway LLMPolicy або FastAPI middleware |
-| 13 | Per-agent budgets | AutoGen max_turns + external budget tracker |
-| 14 | vLLM for agents | Підходить з prefix caching; оптимально з llm-d |
-| 15 | llm-d scheduler | KV-cache aware routing → 3-5x faster agentic chains |
+**Yes**, and this is one of llm-d's headline use cases.
+
+**What llm-d is:**
+[llm-d](https://github.com/llm-d/llm-d) — a Kubernetes-native, high-performance distributed LLM inference framework built on vLLM, Kubernetes, and the Gateway API Inference Extension. It was originally launched by Red Hat (under the Red Hat / IBM umbrella) and is now a multi-vendor open-source project.
+
+**How it helps with 15 LLM calls from one agent:**
+- **KV-cache aware routing** — the scheduler tracks which decode worker holds which KV cache blocks and routes new requests to the worker that already has the matching prefix cached. For an agent with a 2000-token system prompt repeated across 15 calls, this turns 14 expensive prefills into cache hits.
+- **Disaggregated prefill / decode** — prefill runs on compute-optimised nodes, decode on memory-bandwidth-optimised nodes, transferred via a KV connector (e.g. NIXL). This removes head-of-line blocking that vLLM monolithic deployments hit when long prefills delay running decodes.
+- **Prefix-aware scheduling** — requests that share a long prefix are routed to the same pod, maximising the cache hit rate that vLLM's APC can exploit.
+- **Hierarchical KV offloading** (v0.5+) — KV blocks evicted from GPU memory are kept on CPU or disk tiers instead of being thrown away.
+
+**Why naive Kubernetes load balancing breaks this:** round-robin spreads related requests across pods, destroying cache locality and forcing repeated prefills. llm-d replaces that with an Envoy-based inference-aware scheduler (External Processing Pod) plugged into the Gateway API Inference Extension.
+
+**Published numbers** (from llm-d and partners' benchmarks):
+- ~3× lower TTFT and ~50% higher QPS vs round-robin baseline on prefix-heavy workloads.
+- Up to ~70% higher throughput with prefill/decode disaggregation on large models.
+
+**In our abox setup:** llm-d can be deployed alongside vLLM as the scheduling layer — agents continue to call the OpenAI-compatible endpoint, while llm-d transparently optimises routing across GPU nodes.
